@@ -18,6 +18,13 @@ import (
 
 	// nolint:staticcheck
 	golang_proto "github.com/golang/protobuf/proto"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp"
+	"go.opentelemetry.io/otel/label"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/semconv"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/argoproj/pkg/jwt/zjwt"
 	"github.com/argoproj/pkg/sync"
@@ -462,6 +469,50 @@ func (a *ArgoCDServer) useTLS() bool {
 	return true
 }
 
+var tracingEnabled bool = false
+
+func initTracing() error {
+	ctx := context.Background()
+	// Create stdout exporter to be able to retrieve
+	// the collected spans.
+	fmt.Println("exporter")
+	exporter, err := otlp.NewExporter(otlp.WithInsecure(),
+		otlp.WithAddress("kubernetes.docker.internal:55680"),
+	)
+	if err != nil {
+		return err
+	}
+	fmt.Println("exporter")
+
+	res, err := resource.New(ctx, resource.WithAttributes(semconv.ServiceNameKey.String("fjemison-test")))
+
+	fmt.Println("exporter")
+	if err != nil {
+		return err
+	}
+
+	// For the demonstration, use sdktrace.AlwaysSample sampler to sample all traces.
+	// In a production application, use sdktrace.ProbabilitySampler with a desired probability.
+	tp := sdktrace.NewTracerProvider(sdktrace.WithConfig(sdktrace.Config{DefaultSampler: sdktrace.AlwaysSample()}),
+		sdktrace.WithSyncer(exporter),
+		sdktrace.WithResource(res),
+	)
+	fmt.Println("exporter")
+
+	if err != nil {
+		return err
+	}
+	otel.SetTracerProvider(tp)
+	fmt.Println("exporter")
+	tracer := otel.Tracer("ex.com/basic")
+	var span trace.Span
+	ctx, span = tracer.Start(ctx, "operation")
+	defer span.End()
+
+	span.AddEvent("Nice operation!", trace.WithAttributes(label.Int("bogons", 100)))
+	return nil
+}
+
 func (a *ArgoCDServer) newGRPCServer() *grpc.Server {
 	if enableGRPCTimeHistogram {
 		grpc_prometheus.EnableHandlingTimeHistogram()
@@ -475,6 +526,13 @@ func (a *ArgoCDServer) newGRPCServer() *grpc.Server {
 		grpc.MaxSendMsgSize(apiclient.MaxGRPCMessageSize),
 		grpc.ConnectionTimeout(300 * time.Second),
 	}
+
+	if tracingEnabled {
+		fmt.Println("initing tracing test")
+		initTracing()
+		fmt.Println("inited tracing")
+	}
+
 	sensitiveMethods := map[string]bool{
 		"/cluster.ClusterService/Create":                          true,
 		"/cluster.ClusterService/Update":                          true,
@@ -502,6 +560,7 @@ func (a *ArgoCDServer) newGRPCServer() *grpc.Server {
 		}),
 		grpc_util.ErrorCodeStreamServerInterceptor(),
 		grpc_util.PanicLoggerStreamServerInterceptor(a.log),
+		// otelgrpc.StreamServerInterceptor(),
 	)))
 	sOpts = append(sOpts, grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
 		bug21955WorkaroundInterceptor,
@@ -514,6 +573,7 @@ func (a *ArgoCDServer) newGRPCServer() *grpc.Server {
 		}),
 		grpc_util.ErrorCodeUnaryServerInterceptor(),
 		grpc_util.PanicLoggerUnaryServerInterceptor(a.log),
+		// otelgrpc.UnaryServerInterceptor(),
 	)))
 	grpcS := grpc.NewServer(sOpts...)
 	db := db.NewDB(a.Namespace, a.settingsMgr, a.KubeClientset)
