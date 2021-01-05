@@ -18,6 +18,7 @@ import (
 
 	// nolint:staticcheck
 	golang_proto "github.com/golang/protobuf/proto"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp"
 	"go.opentelemetry.io/otel/label"
@@ -469,7 +470,7 @@ func (a *ArgoCDServer) useTLS() bool {
 	return true
 }
 
-var tracingEnabled bool = false
+var tracingEnabled bool = true
 
 func initTracing() error {
 	ctx := context.Background()
@@ -484,7 +485,7 @@ func initTracing() error {
 	}
 	fmt.Println("exporter")
 
-	res, err := resource.New(ctx, resource.WithAttributes(semconv.ServiceNameKey.String("fjemison-test")))
+	res, err := resource.New(ctx, resource.WithAttributes(semconv.ServiceNameKey.String("argocd-server")))
 
 	fmt.Println("exporter")
 	if err != nil {
@@ -494,7 +495,7 @@ func initTracing() error {
 	// For the demonstration, use sdktrace.AlwaysSample sampler to sample all traces.
 	// In a production application, use sdktrace.ProbabilitySampler with a desired probability.
 	tp := sdktrace.NewTracerProvider(sdktrace.WithConfig(sdktrace.Config{DefaultSampler: sdktrace.AlwaysSample()}),
-		sdktrace.WithSyncer(exporter),
+		sdktrace.WithBatcher(exporter),
 		sdktrace.WithResource(res),
 	)
 	fmt.Println("exporter")
@@ -560,7 +561,7 @@ func (a *ArgoCDServer) newGRPCServer() *grpc.Server {
 		}),
 		grpc_util.ErrorCodeStreamServerInterceptor(),
 		grpc_util.PanicLoggerStreamServerInterceptor(a.log),
-		// otelgrpc.StreamServerInterceptor(),
+		otelgrpc.StreamServerInterceptor(),
 	)))
 	sOpts = append(sOpts, grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
 		bug21955WorkaroundInterceptor,
@@ -573,7 +574,7 @@ func (a *ArgoCDServer) newGRPCServer() *grpc.Server {
 		}),
 		grpc_util.ErrorCodeUnaryServerInterceptor(),
 		grpc_util.PanicLoggerUnaryServerInterceptor(a.log),
-		// otelgrpc.UnaryServerInterceptor(),
+		otelgrpc.UnaryServerInterceptor(),
 	)))
 	grpcS := grpc.NewServer(sOpts...)
 	db := db.NewDB(a.Namespace, a.settingsMgr, a.KubeClientset)

@@ -21,6 +21,8 @@ import (
 	"github.com/argoproj/pkg/sync"
 	jsonpatch "github.com/evanphx/json-patch"
 	log "github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel/label"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -126,25 +128,52 @@ func appRBACName(app appv1.Application) string {
 
 // List returns list of applications
 func (s *Server) List(ctx context.Context, q *application.ApplicationQuery) (*appv1.ApplicationList, error) {
-	labelsMap, err := labels.ConvertSelectorToLabelsMap(q.Selector)
+	span := trace.SpanFromContext(ctx)
+	labelsMap, err := labels.ConvertSelectorToLabelsMap(*q.Selector)
 	if err != nil {
 		return nil, err
 	}
+
+	_, appListerSpan := span.Tracer().Start(ctx, "listApplications")
 	apps, err := s.appLister.List(labelsMap.AsSelector())
+
 	if err != nil {
+		appListerSpan.RecordError(err)
+		appListerSpan.End()
 		return nil, err
 	}
+
+	appListerSpan.End()
+
 	newItems := make([]appv1.Application, 0)
+	enforceAppsCtx, enforceAppsSpan := span.Tracer().Start(ctx, "enforceApps")
+	// _, enforceAppsSpan := span.Tracer().Start(ctx, "enforceApps")
 	for _, a := range apps {
+		log.Info("starting loop")
+		_, enforceSpan := enforceAppsSpan.Tracer().Start(enforceAppsCtx, "enforceApp")
+		enforceSpan.SetAttributes(label.KeyValue{Key: "applicationName", Value: label.StringValue(a.Name)})
+		// time.Sleep(1 * time.Second)
+
 		if s.enf.Enforce(ctx.Value("claims"), rbacpolicy.ResourceApplications, rbacpolicy.ActionGet, appRBACName(*a)) {
 			newItems = append(newItems, *a)
 		}
+
+		enforceSpan.End()
+		log.Info("ending loop")
 	}
+
+	enforceAppsSpan.End()
+
 	if q.Name != nil {
+		_, filterSpan := span.Tracer().Start(ctx, "filterByName")
+
 		newItems, err = argoutil.FilterByName(newItems, *q.Name)
 		if err != nil {
+			filterSpan.RecordError(err)
+			filterSpan.End()
 			return nil, err
 		}
+		filterSpan.End()
 	}
 	newItems = argoutil.FilterByProjects(newItems, q.Projects)
 	sort.Slice(newItems, func(i, j int) bool {
@@ -314,7 +343,7 @@ func (s *Server) Get(ctx context.Context, q *application.ApplicationQuery) (*app
 	// following a Watch (which is not yet powered by an informer), and the Get must reflect what was
 	// previously seen by the client.
 	a, err := s.appclientset.ArgoprojV1alpha1().Applications(s.ns).Get(ctx, q.GetName(), metav1.GetOptions{
-		ResourceVersion: q.ResourceVersion,
+		ResourceVersion: *q.ResourceVersion,
 	})
 
 	if err != nil {
@@ -649,13 +678,13 @@ func (s *Server) Watch(q *application.ApplicationQuery, ws application.Applicati
 		logCtx = logCtx.WithField("application", *q.Name)
 	}
 	claims := ws.Context().Value("claims")
-	selector, err := labels.Parse(q.Selector)
+	selector, err := labels.Parse(*q.Selector)
 	if err != nil {
 		return err
 	}
 	minVersion := 0
-	if q.ResourceVersion != "" {
-		if minVersion, err = strconv.Atoi(q.ResourceVersion); err != nil {
+	if q.ResourceVersion != nil && *q.ResourceVersion != "" {
+		if minVersion, err = strconv.Atoi(*q.ResourceVersion); err != nil {
 			minVersion = 0
 		}
 	}
@@ -690,7 +719,7 @@ func (s *Server) Watch(q *application.ApplicationQuery, ws application.Applicati
 	// If watch API is executed for one application when emit event even if resource version is provided
 	// This is required since single app watch API is used for during operations like app syncing and it is
 	// critical to never miss events.
-	if q.ResourceVersion == "" || q.GetName() != "" {
+	if (q.ResourceVersion != nil && *q.ResourceVersion == "") || q.GetName() != "" {
 		apps, err := s.appLister.List(selector)
 		if err != nil {
 			return err

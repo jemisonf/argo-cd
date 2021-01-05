@@ -23,9 +23,9 @@ message ApplicationQuery {
 	// the project names to restrict returned list applications
 	repeated string project = 3 [(gogoproto.customname) = "Projects"];
 	// when specified with a watch call, shows changes that occur after that particular version of a resource.
-	optional string resourceVersion = 4 [(gogoproto.nullable) = false];
+	optional string resourceVersion = 4 [(gogoproto.nullable) = true];
 	// the selector to to restrict returned list to applications only with matched labels
-	optional string selector = 5 [(gogoproto.nullable) = false];
+	optional string selector = 5 [(gogoproto.nullable) = true];
 }
 
 message RevisionMetadataQuery{
