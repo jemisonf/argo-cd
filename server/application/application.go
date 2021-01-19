@@ -342,8 +342,12 @@ func (s *Server) Get(ctx context.Context, q *application.ApplicationQuery) (*app
 	// We must use a client Get instead of an informer Get, because it's common to call Get immediately
 	// following a Watch (which is not yet powered by an informer), and the Get must reflect what was
 	// previously seen by the client.
+	resourceVersion := ""
+	if q.ResourceVersion != nil {
+		resourceVersion = *q.ResourceVersion
+	}
 	a, err := s.appclientset.ArgoprojV1alpha1().Applications(s.ns).Get(ctx, q.GetName(), metav1.GetOptions{
-		ResourceVersion: *q.ResourceVersion,
+		ResourceVersion: resourceVersion,
 	})
 
 	if err != nil {
@@ -678,7 +682,11 @@ func (s *Server) Watch(q *application.ApplicationQuery, ws application.Applicati
 		logCtx = logCtx.WithField("application", *q.Name)
 	}
 	claims := ws.Context().Value("claims")
-	selector, err := labels.Parse(*q.Selector)
+	querySelector := ""
+	if q.Selector != nil {
+		querySelector = *q.Selector
+	}
+	selector, err := labels.Parse(querySelector)
 	if err != nil {
 		return err
 	}
@@ -1077,7 +1085,7 @@ func (s *Server) ManagedResources(ctx context.Context, q *application.ResourcesQ
 func (s *Server) PodLogs(q *application.ApplicationPodLogsQuery, ws application.ApplicationService_PodLogsServer) error {
 	pod, config, _, err := s.getAppResource(ws.Context(), rbacpolicy.ActionGet, &application.ApplicationResourceRequest{
 		Name:         q.Name,
-		Namespace:    q.Namespace,
+		Namespace:    *q.Namespace,
 		Kind:         kube.PodKind,
 		Group:        "",
 		Version:      "v1",
